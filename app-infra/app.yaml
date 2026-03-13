@@ -1,0 +1,189 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS CloudFormation Template for App Infrastructure 
+
+Parameters: 
+   Environment:
+      Type: String
+      Description: "Environment name (e.g., dev, prod)"
+
+Resources:
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for load balancer"
+      GroupName: !Sub "${Environment}-alb-sg"
+      VpcId: 
+        Fn::ImportValue: !Sub  "${Environment}-vpc-id"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  AppSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Properties:
+        GroupDescription: "Security group for application servers"
+        GroupName: !Sub "${Environment}-app-sg"
+        VpcId: 
+          Fn::ImportValue: !Sub "${Environment}-vpc-id"
+        SecurityGroupIngress:
+          - IpProtocol: tcp
+            FromPort: 80
+            ToPort: 80
+            SourceSecurityGroupId: !Ref ALBSecurityGroup
+        SecurityGroupEgress:
+          - IpProtocol: tcp
+            FromPort: 0
+            ToPort: 65535
+            CidrIp: 0.0.0.0/0
+
+  AppLunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "${Environment}-app-launch-template"
+      
+      LaunchTemplateData:
+        ImageId: ami-0c42fad2ea005202d # Amazon Linux 2 AMI (HVM), SSD Volume Type
+        InstanceType: t3.micro
+        IamInstanceProfile:
+          Arn: !GetAtt appInstanceProfile.Arn
+        SecurityGroupIds: 
+          - Ref: AppSecurityGroup
+        UserData:
+          Fn::Base64:  |
+              apt-get update -y
+              apt-get install apache2 -y
+              systemctl start apache2.service
+              cd /var/www/html
+              echo " Demo Web Server Up and Running!" > index.html
+
+  appInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${Environment}-app-instance-profile"
+      Roles: 
+        - !Ref s3AccessRole
+
+  s3AccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Environment}-s3-access-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3AccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:  
+                  - !Sub "arn:aws:s3:::${Environment}-static-content-bucket/*"
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${Environment}-app-asg"
+      LaunchTemplate:
+        LaunchTemplateId: 
+          Ref: AppLunchTemplate
+        Version: !GetAtt AppLunchTemplate.LatestVersionNumber
+      MinSize: "2"
+      MaxSize: "5"
+      DesiredCapacity: "2"
+      VPCZoneIdentifier:
+        - Fn::ImportValue:  !Sub "${Environment}-private-subnet-ids"
+      TargetGroupARNs:
+        - Ref: AppTargetGroup    
+
+  webAppALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${Environment}-app-alb"
+        
+      Subnets:
+        - Fn::ImportValue: !Sub "${Environment}-public-subnet-1-id" 
+        - Fn::ImportValue:  !Sub "${Environment}-public-subnet-2-id"
+            
+      SecurityGroups:
+        - Ref: ALBSecurityGroup
+
+## ALB Listener and Target Group ##
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: 
+        Ref: webAppALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: 
+            Ref: AppTargetGroup
+      
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: 
+        Ref: ALBListener
+      Priority: 1
+      Conditions:
+        - Field: path-pattern
+          Values: 
+            - "/*"
+      Actions:
+        - Type: forward
+          TargetGroupArn: 
+            Ref: AppTargetGroup
+      
+  AppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${Environment}-app-tg"
+      Port: 80
+      Protocol: HTTP
+      VpcId: 
+        Fn::ImportValue: !Sub "${Environment}-vpc-id"
+     
+      HealthCheckPath: "/"
+      HealthCheckIntervalSeconds: 10
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2  
+      UnhealthyThresholdCount: 2    
+
+
+###### Static Content S3 Bucket ######
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${Environment}-static-content-bucket"
+      PublicAccessBlockConfiguration:
+                BlockPublicAcls: false
+                BlockPublicPolicy: false
+                IgnorePublicAcls: false
+                RestrictPublicBuckets: false
+  
+  S3BucketPolicy:
+            Type: 'AWS::S3::BucketPolicy'
+            Properties:
+              Bucket: !Ref S3Bucket
+              PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                  - Effect: Allow
+                    Principal: '*'
+                    Action: 's3:GetObject'
+                    Resource:
+                      Fn::Join:
+                        - ''
+                        - - 'arn:aws:s3:::'
+                          - Ref: 'S3Bucket'
+                          - '/*'
