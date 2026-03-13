@@ -1,0 +1,10 @@
+[
+    {
+        "ParameterKey": "Environment",
+        "ParameterValue": "dev"
+    },
+    {
+        "ParameterKey": "VpcCidrBlock",
+        "ParameterValue": "10.0.0.0/16"
+    }
+]
