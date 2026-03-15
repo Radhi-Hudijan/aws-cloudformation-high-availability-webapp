@@ -5,6 +5,7 @@ Parameters:
    Environment:
       Type: String
       Description: "Environment name (e.g., dev, prod)"
+      Default: "dev"
 
 Resources:
   ALBSecurityGroup:
@@ -52,11 +53,12 @@ Resources:
           - Ref: AppSecurityGroup
         UserData:
           Fn::Base64:  |
-              apt-get update -y
-              apt-get install apache2 -y
-              systemctl start apache2.service
-              cd /var/www/html
-              echo " Demo Web Server Up and Running!" > index.html
+              #!/bin/bash
+              sudo yum update -y
+              sudo yum install -y httpd
+              sudo systemctl start httpd
+              sudo systemctl enable httpd
+              echo "Udacity Demo Web Server Up and Running!" > /var/www/html/index.html
 
   appInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -98,6 +100,8 @@ Resources:
         Version: !GetAtt AppLunchTemplate.LatestVersionNumber
       MinSize: "2"
       MaxSize: "5"
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 120
       DesiredCapacity: "2"
       VPCZoneIdentifier:
         - Fn::ImportValue:  !Sub "${Environment}-private-subnet-ids"
@@ -164,7 +168,8 @@ Resources:
   S3Bucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub "${Environment}-static-content-bucket"
+      BucketName: !Sub "${Environment}-static-content-bucket-${AWS::AccountId}-${AWS::Region}-an"
+      BucketNamespace: "account-regional"
       PublicAccessBlockConfiguration:
                 BlockPublicAcls: false
                 BlockPublicPolicy: false
@@ -187,3 +192,14 @@ Resources:
                         - - 'arn:aws:s3:::'
                           - Ref: 'S3Bucket'
                           - '/*'
+
+Outputs:
+  ALBEndpoint:
+    Description: "URL of the Application Load Balancer"
+    Value: 
+      Fn::Join:
+        - ''
+        - - 'http://'
+          - Fn::GetAtt:
+              - webAppALB
+              - DNSName
