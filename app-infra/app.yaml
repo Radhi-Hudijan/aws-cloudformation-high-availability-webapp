@@ -33,6 +33,11 @@ Resources:
             FromPort: 80
             ToPort: 80
             SourceSecurityGroupId: !Ref ALBSecurityGroup
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            SourceSecurityGroupId: !Ref BastionSecurityGroup
+
         SecurityGroupEgress:
           - IpProtocol: tcp
             FromPort: 0
@@ -45,6 +50,12 @@ Resources:
       LaunchTemplateName: !Sub "${Environment}-app-launch-template"
       
       LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: "/dev/xvda"
+            Ebs:
+              VolumeSize: 22
+              VolumeType: gp2
+              DeleteOnTermination: true
         ImageId: ami-0c42fad2ea005202d # Amazon Linux 2 AMI (HVM), SSD Volume Type
         InstanceType: t3.micro
         IamInstanceProfile:
@@ -52,13 +63,14 @@ Resources:
         SecurityGroupIds: 
           - Ref: AppSecurityGroup
         UserData:
-          Fn::Base64:  |
+          Fn::Base64: !Sub |
               #!/bin/bash
               sudo yum update -y
               sudo yum install -y httpd
               sudo systemctl start httpd
               sudo systemctl enable httpd
-              echo "Udacity Demo Web Server Up and Running!" > /var/www/html/index.html
+              cd /var/www/html
+              aws s3 cp s3://${Environment}-static-content-bucket-${AWS::AccountId}-${AWS::Region}-an/index.html .
 
   appInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -192,6 +204,40 @@ Resources:
                         - - 'arn:aws:s3:::'
                           - Ref: 'S3Bucket'
                           - '/*'
+
+### creation of bastion host for secure access to private resources ###
+  BationKeyPair:
+    Type: AWS::EC2::KeyPair
+    Properties:
+      KeyName: !Sub "${Environment}-bastion-key"
+  
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: ami-0c42fad2ea005202d # Amazon Linux 2 AMI (HVM), SSD Volume Type
+      KeyName: !Ref BationKeyPair
+      SecurityGroupIds:
+        - Ref: BastionSecurityGroup
+      SubnetId: 
+        Fn::ImportValue: !Sub "${Environment}-public-subnet-1-id"
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-bastion-host"
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Security group for bastion host"
+      GroupName: !Sub "${Environment}-bastion-sg"
+      VpcId: 
+        Fn::ImportValue: !Sub "${Environment}-vpc-id"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+
 
 Outputs:
   ALBEndpoint:
